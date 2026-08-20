@@ -3,6 +3,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Proxy
+PROXY_SET: bool = os.getenv('PROXY_SET', False)
+PROXY_TYPE: str = os.getenv('PROXY_TYPE', 'http')
+PROXY_HOST: str = os.getenv('PROXY_HOST', '147.45.225.110')
+PROXY_PORT: str = os.getenv('PROXY_PORT', '3128')
+PROXY_USERNAME: str = os.getenv('PROXY_USERNAME', 'myuser')
+PROXY_PASSWORD: str = os.getenv('PROXY_PASSWORD', '')
+
 # Telegram API credentials
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
@@ -12,7 +20,7 @@ STRING_SESSION = os.getenv('STRING_SESSION', '')
 
 # Database settings
 # Для Bothost.ru используйте /app/data/messages.db
-DATABASE_PATH = os.getenv('DATABASE_PATH', 'messages.db')
+DATABASE_PATH = os.getenv('DATABASE_PATH', "postgresql://user:12345@localhost:5432/dixy")
 
 # Logging settings
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

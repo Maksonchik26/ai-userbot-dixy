@@ -12,6 +12,12 @@ from config import (
     STRING_SESSION,
     LOG_LEVEL,
     LOG_FILE,
+    PROXY_HOST,
+    PROXY_PORT,
+    PROXY_USERNAME,
+    PROXY_PASSWORD,
+    PROXY_SET,
+    PROXY_TYPE,
 )
 from database import MessageDatabase
 
@@ -29,9 +35,27 @@ logger = logging.getLogger(__name__)
 # Инициализация базы данных
 db = MessageDatabase()
 
+# Создаем и устанавливаем цикл событий ПЕРЕД инициализацией клиента
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 # Инициализация клиента Telegram
 session_arg = StringSession(STRING_SESSION) if STRING_SESSION else SESSION_NAME
-client = TelegramClient(session_arg, API_ID, API_HASH)
+
+# Инициализация прокси, если передан в env
+proxy = None
+if PROXY_SET:
+    proxy = {
+        'proxy_type': PROXY_TYPE,
+        'addr': PROXY_HOST,
+        'port': PROXY_PORT,
+        'username': PROXY_USERNAME,
+        'password': PROXY_PASSWORD,
+        'rdns': True
+    }
+
+# Инициализация клиента
+client = TelegramClient(session_arg, API_ID, API_HASH, proxy=proxy)
 
 # Флаг для отслеживания активного парсинга
 parsing_active = {}
