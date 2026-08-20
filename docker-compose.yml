@@ -1,0 +1,26 @@
+services:
+  userbot:
+    build: .
+    container_name: ai-userbot-compose
+    restart: unless-stopped
+    command: ["python", "-m", "userbot"]
+    env_file: .env
+    depends_on:
+      - db  # Ждем запуска БД перед стартом userbot
+
+  db:
+    image: postgres:16-alpine
+    container_name: ai-userbot-db
+    restart: unless-stopped
+    env_file: .env
+#    environment:
+#      POSTGRES_USER: ${DB_USER:-userbot}
+#      POSTGRES_PASSWORD: ${DB_PASSWORD:-userbot_password}
+#      POSTGRES_DB: ${DB_NAME:-userbot_db}
+    ports:
+      - "5432:5432"  # Опционально — только если нужен доступ снаружи
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

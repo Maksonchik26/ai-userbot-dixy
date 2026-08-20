@@ -62,9 +62,9 @@ Thumbs.db
 # Bothost specific
 .bothost/
 
-# Dockerfile (генерируется автоматически на платформе)
-Dockerfile
-.dockerignore
+## Dockerfile (генерируется автоматически на платформе)
+#Dockerfile
+#.dockerignore
 
 # Archives (для развертывания)
 *.zip
