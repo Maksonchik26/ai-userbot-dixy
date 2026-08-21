@@ -10,8 +10,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-#EXPOSE 8000
+EXPOSE 8000
 
 # Запуск Python-скрипта планировщика
-CMD ["python", "-m", "userbot"]
+CMD ["python", "-m", "main"]
 #CMD ["pip", "freeze"]
