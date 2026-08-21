@@ -18,6 +18,7 @@ from config import (
     PROXY_PASSWORD,
     PROXY_SET,
     PROXY_TYPE,
+    CHAT_ENTITIES,
 )
 from database import MessageDatabase
 
@@ -186,6 +187,14 @@ async def process_message(message, chat, sender=None):
         return False
 
 
+chat_entities = [item.strip() for item in CHAT_ENTITIES.split(",") if item.strip()]
+
+@client.on(events.NewMessage(pattern="/all_parse"))
+async def parse_some_chats(event):
+    for chat_entity in chat_entities:
+        await parse_chat_history(chat_entity)
+
+
 async def parse_chat_history(chat_entity, limit=None, offset_date=None):
     """
     Парсинг истории сообщений из чата
@@ -226,13 +235,15 @@ async def parse_chat_history(chat_entity, limit=None, offset_date=None):
         
         total_parsed = 0
         errors_count = 0
+        last_message_id: int = await db.get_max_message_id_from_chat(chat_id)
         
         try:
             async for message in client.iter_messages(
                 chat,
                 limit=limit,
                 offset_date=offset_date,
-                reverse=False  # Сначала старые сообщения
+                offset_id=last_message_id,
+                reverse=True  # Сначала старые сообщения
             ):
                 try:
                     # Пропускаем служебные сообщения
@@ -358,10 +369,11 @@ async def parse_command_handler(event):
         # Получаем аргументы команды - парсим вручную из текста сообщения
         # Формат: /parse @username или /parse @username limit=1000
         parts = message_text.split(None, 1)  # Разделяем по пробелам, максимум 2 части
-        if len(parts) < 2:
-            await event.respond("❌ Неверный формат команды. Используйте: `/parse @username` или `/parse @username limit=1000`")
+        if len(parts) < 2 and message_text != "/parse_all":
+            await event.respond(
+                "❌ Неверный формат команды. Используйте: `/parse @username`, или `/parse @username limit=1000`, или `/parse_all`")
             return
-        
+
         args = parts[1].strip()  # Все что после /parse
         
         # Парсим аргументы: /parse @username или /parse @username limit=1000

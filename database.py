@@ -41,7 +41,9 @@ class MessageDatabase:
                 has_media INTEGER DEFAULT 0,
                 media_type TEXT,
                 raw_data TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                CONSTRAINT unique_chat_message UNIQUE (message_id, chat_id)
             )
         ''')
 
@@ -144,4 +146,10 @@ class MessageDatabase:
         """Получение списка всех чатов"""
         rows = await self.connection.fetch('SELECT * FROM chats ORDER BY last_activity DESC')
         return [dict(row) for row in rows]
+
+    async def get_max_message_id_from_chat(self, chat_id: int) -> int:
+        """Получение ID последнего сообщения из чата"""
+        last_message_id = await self.connection.fetchval("SELECT MAX(message_id) FROM messages WHERE chat_id = $1", chat_id)
+
+        return last_message_id
 

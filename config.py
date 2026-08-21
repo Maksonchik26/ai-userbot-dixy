@@ -20,7 +20,8 @@ STRING_SESSION = os.getenv('STRING_SESSION', '')
 
 # Database settings
 # Для Bothost.ru используйте /app/data/messages.db
-DATABASE_PATH = os.getenv('DATABASE_PATH', "postgresql://user:12345@localhost:5432/dixy")
+DATABASE_PATH = os.getenv('DATABASE_PATH', "postgresql://user:12345@db:5432/dixy")
+CHAT_ENTITIES = os.getenv('CHAT_ENTITIES', ["@radar_bryanskk"])
 
 # Logging settings
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
