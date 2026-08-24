@@ -1,7 +1,9 @@
+name: prod
+
 services:
   userbot:
     build: .
-    container_name: ai-userbot-compose
+    container_name: ai-userbot-app
     restart: unless-stopped
     command: ["python", "-m", "main"]
     env_file: .env

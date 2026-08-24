@@ -245,5 +245,5 @@ python export_data.py stats
 
 ---
 
-**Развертывание:** [Bothost.ru](https://bothost.ru) - лучшая платформа для хостинга ботов в России
-
+**Развертывание:** 
+docker compose -f {ИМЯ_НУЖНОГО_COMPOSE}.yml -p {НАЗВАНИЕ_ОКРУЖЕНИЯ} down

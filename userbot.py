@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, date
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
@@ -195,14 +195,13 @@ async def parse_some_chats():
         await parse_chat_history(chat_entity)
 
 
-async def parse_chat_history(chat_entity, limit=None, offset_date=None):
+async def parse_chat_history(chat_entity, limit=None):
     """
     Парсинг истории сообщений из чата
     
     Args:
         chat_entity: Объект чата (может быть username, ID или entity)
         limit: Максимальное количество сообщений для парсинга (None = все)
-        offset_date: Дата, с которой начинать парсинг (None = с начала)
     """
     chat_id = None
     chat_title = "Unknown"
@@ -241,7 +240,7 @@ async def parse_chat_history(chat_entity, limit=None, offset_date=None):
             async for message in client.iter_messages(
                 chat,
                 limit=limit,
-                offset_date=offset_date,
+                offset_date=date.today(),
                 offset_id=last_message_id,
                 reverse=True  # Сначала старые сообщения
             ):

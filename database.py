@@ -151,5 +151,4 @@ class MessageDatabase:
         """Получение ID последнего сообщения из чата"""
         last_message_id = await self.connection.fetchval("SELECT MAX(message_id) FROM messages WHERE chat_id = $1", chat_id)
 
-        return last_message_id
-
+        return last_message_id or 0

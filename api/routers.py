@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Response, Request
+from fastapi import APIRouter, Response, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from userbot import parse_some_chats
@@ -10,10 +10,14 @@ parsing_router = APIRouter(
 
 
 @parsing_router.get("/parse_all")
-async def parse_all_new_messages():
-    await parse_some_chats()
+async def parse_all_new_messages(background_tasks: BackgroundTasks):
+    # Запуск фоновой обработки
+    background_tasks.add_task(parse_some_chats)
 
-    return JSONResponse({"message": "Parsing in progress",}, status_code=200)
+    return JSONResponse(
+        {"message": "Parsing in progress"},
+        status_code=200,
+    )
 
 
 # @parsing_router.get("/health")
