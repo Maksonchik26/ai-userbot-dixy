@@ -41,6 +41,7 @@ class MessageDatabase:
                 has_media INTEGER DEFAULT 0,
                 media_type TEXT,
                 raw_data TEXT,
+                parsed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 
                 CONSTRAINT unique_chat_message UNIQUE (message_id, chat_id)
@@ -75,6 +76,12 @@ class MessageDatabase:
             ON messages(user_id)
         ''')
 
+        # Миграция: добавляем parsed_at, если колонки нет
+        await self.connection.execute('''
+          ALTER TABLE messages
+          ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMP
+        ''')
+
     async def save_message(self, message_data: Dict):
         """Сохранение сообщения в базу данных"""
         try:
@@ -83,8 +90,8 @@ class MessageDatabase:
                     message_id, chat_id, chat_title, chat_type,
                     user_id, username, first_name, last_name,
                     message_text, date, is_reply, reply_to_message_id,
-                    has_media, media_type, raw_data
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                    has_media, media_type, raw_data, parsed_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 RETURNING id
             ''',
                 message_data.get('message_id'),
@@ -96,12 +103,13 @@ class MessageDatabase:
                 message_data.get('first_name'),
                 message_data.get('last_name'),
                 message_data.get('message_text'),
-                datetime.fromisoformat(message_data.get('date')).replace(tzinfo=None),
+                    datetime.fromisoformat(message_data.get('date')).replace(tzinfo=None),
                 message_data.get('is_reply', 0),
                 message_data.get('reply_to_message_id'),
                 message_data.get('has_media', False),
                 message_data.get('media_type'),
-                json.dumps(message_data.get('raw_data', {}))
+                json.dumps(message_data.get('raw_data', {})),
+                message_data.get('parsed_at'),
             )
             return row['id'] if row else None
         except Exception as e:

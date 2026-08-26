@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
@@ -45,7 +45,7 @@ session_arg = StringSession(STRING_SESSION) if STRING_SESSION else SESSION_NAME
 
 # Инициализация прокси, если передан в env
 proxy = None
-if PROXY_SET:
+if PROXY_SET == True:
     proxy = {
         'proxy_type': PROXY_TYPE,
         'addr': PROXY_HOST,
@@ -119,7 +119,7 @@ def get_media_info(message):
     }
 
 
-async def process_message(message, chat, sender=None):
+async def process_message(message, chat, parsed_at: datetime = None, sender=None):
     """Обработка и сохранение сообщения"""
     try:
         # Получение информации о чате
@@ -165,7 +165,8 @@ async def process_message(message, chat, sender=None):
                 'views': getattr(message, 'views', None),
                 'forwards': getattr(message, 'forwards', None),
                 'replies': getattr(message.replies, 'replies', None) if hasattr(message, 'replies') and message.replies else None,
-            }
+            },
+            'parsed_at': parsed_at,
         }
         
         # Сохранение сообщения
@@ -191,11 +192,13 @@ chat_entities = [item.strip() for item in CHAT_ENTITIES.split(",") if item.strip
 
 
 async def parse_some_chats():
+    parsed_at = datetime.now()
+
     for chat_entity in chat_entities:
-        await parse_chat_history(chat_entity)
+        await parse_chat_history(chat_entity, parsed_at)
 
 
-async def parse_chat_history(chat_entity, limit=None):
+async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
     """
     Парсинг истории сообщений из чата
     
@@ -240,7 +243,7 @@ async def parse_chat_history(chat_entity, limit=None):
             async for message in client.iter_messages(
                 chat,
                 limit=limit,
-                offset_date=date.today(),
+                offset_date=date.today() - timedelta(days=7),
                 offset_id=last_message_id,
                 reverse=True  # Сначала старые сообщения
             ):
@@ -255,7 +258,7 @@ async def parse_chat_history(chat_entity, limit=None):
                         logger.debug(f"Не удалось получить отправителя для сообщения {message.id}: {e}")
                         sender = None
                     
-                    success = await process_message(message, chat, sender)
+                    success = await process_message(message, chat, parsed_at, sender)
                     
                     if success:
                         total_parsed += 1
@@ -299,6 +302,7 @@ async def parse_chat_history(chat_entity, limit=None):
 async def handler(event):
     """Обработчик новых сообщений"""
     try:
+        parsed_at = datetime.now()
         message = event.message
         message_text = message.text or ""
         chat_id = event.chat_id
@@ -318,7 +322,7 @@ async def handler(event):
         
         chat = await event.get_chat()
         sender = await event.get_sender()
-        await process_message(message, chat, sender)
+        await process_message(message, chat, parsed_at, sender)
         
         chat_info = get_chat_info(chat)
         user_info = get_user_info(sender)
@@ -332,11 +336,13 @@ async def handler(event):
 async def handler_edited(event):
     """Обработчик отредактированных сообщений"""
     try:
+        parsed_at = datetime.now()
+
         message = event.message
         chat = await event.get_chat()
         sender = await event.get_sender()
         
-        await process_message(message, chat, sender)
+        await process_message(message, chat, parsed_at, sender)
         logger.debug(f"Отредактировано сообщение в чате {event.chat_id}")
     except Exception as e:
         logger.error(f"Ошибка при обработке отредактированного сообщения: {e}", exc_info=True)

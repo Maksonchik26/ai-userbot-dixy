@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Proxy
-PROXY_SET: bool = os.getenv('PROXY_SET', False)
+PROXY_SET: int = int(os.getenv('PROXY_SET', 0))
 PROXY_TYPE: str = os.getenv('PROXY_TYPE', 'http')
 PROXY_HOST: str = os.getenv('PROXY_HOST', '147.45.225.110')
 PROXY_PORT: str = os.getenv('PROXY_PORT', '3128')
@@ -13,15 +13,18 @@ PROXY_PASSWORD: str = os.getenv('PROXY_PASSWORD', '')
 
 # Telegram API credentials
 API_ID = int(os.getenv('API_ID', '0'))
-API_HASH = os.getenv('API_HASH', '')
-SESSION_NAME = os.getenv('SESSION_NAME', 'userbot_session')
+API_HASH: str = os.getenv('API_HASH', '')
+SESSION_NAME: str = os.getenv('SESSION_NAME', 'userbot_session')
 # Optional: use STRING_SESSION instead of session file
-STRING_SESSION = os.getenv('STRING_SESSION', '')
+STRING_SESSION: str = os.getenv('STRING_SESSION', '')
 
 # Database settings
 # Для Bothost.ru используйте /app/data/messages.db
-DATABASE_PATH = os.getenv('DATABASE_PATH', "postgresql://user:12345@db:5432/dixy")
-CHAT_ENTITIES = os.getenv('CHAT_ENTITIES', ["@radar_bryanskk"])
+DATABASE_PATH: str = os.getenv('DATABASE_PATH', "postgresql://user:12345@db:5432/dixy")
+CHAT_ENTITIES: str = os.getenv('CHAT_ENTITIES', "@radar_bryanskk")
+
+SCHEDULER_ON: int = int(os.getenv('SCHEDULER_ON', 0))
+SCHEDULER_PERIOD_MINUTES: int = int(os.getenv('SCHEDULER_PERIOD_MINUTES', 1))
 
 # Logging settings
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

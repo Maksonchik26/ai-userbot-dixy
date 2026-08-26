@@ -1,11 +1,26 @@
 import asyncio
+import httpx
 
 from api.main import start_fastapi
 from userbot import logger, db, client
 from config import (
     SESSION_NAME,
     STRING_SESSION,
+    SCHEDULER_ON,
+    SCHEDULER_PERIOD_MINUTES,
 )
+
+
+async def simple_scheduler(minutes: int):
+    await asyncio.sleep(60)
+    while True:
+        async with httpx.AsyncClient() as client:
+            url = "http://0.0.0.0:8000/parse_all"
+            response = await client.get(url)
+            logger.info(f"Ответ от {url}: статус {response.status_code}")
+
+        await asyncio.sleep(minutes * 60)
+
 
 
 async def main():
@@ -22,6 +37,8 @@ async def main():
         logger.info("Используется STRING_SESSION из переменных окружения")
 
         asyncio.create_task(start_fastapi())
+        if SCHEDULER_ON:
+            asyncio.create_task(simple_scheduler(SCHEDULER_PERIOD_MINUTES))
         await client.start()
     else:
         # Проверяем наличие файла сессии
@@ -52,6 +69,8 @@ async def main():
                     f"Файл сессии {session_file} не найден. Загрузите его на сервер или авторизуйтесь локально.")
         else:
             asyncio.create_task(start_fastapi())
+            if SCHEDULER_ON:
+                asyncio.create_task(simple_scheduler(1))
             await client.start()
 
     logger.info("Userbot запущен и готов к работе!")
