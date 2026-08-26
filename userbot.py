@@ -4,7 +4,8 @@ from datetime import datetime, date, timedelta, timezone
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
-from telethon.errors import FloodWaitError, ChatAdminRequiredError
+from telethon.errors import FloodWaitError, ChatAdminRequiredError, UserAlreadyParticipantError
+from telethon.tl.functions.messages import ImportChatInviteRequest
 from config import (
     API_ID,
     API_HASH,
@@ -45,7 +46,7 @@ session_arg = StringSession(STRING_SESSION) if STRING_SESSION else SESSION_NAME
 
 # Инициализация прокси, если передан в env
 proxy = None
-if PROXY_SET == True:
+if PROXY_SET:
     proxy = {
         'proxy_type': PROXY_TYPE,
         'addr': PROXY_HOST,
@@ -119,7 +120,7 @@ def get_media_info(message):
     }
 
 
-async def process_message(message, chat, parsed_at: datetime = None, sender=None):
+async def process_message(message, chat, parsed_at: datetime | None = None, sender=None, is_comment: bool = False):
     """Обработка и сохранение сообщения"""
     try:
         # Получение информации о чате
@@ -167,6 +168,7 @@ async def process_message(message, chat, parsed_at: datetime = None, sender=None
                 'replies': getattr(message.replies, 'replies', None) if hasattr(message, 'replies') and message.replies else None,
             },
             'parsed_at': parsed_at,
+            'is_comment': is_comment,
         }
         
         # Сохранение сообщения
@@ -203,42 +205,52 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
     Парсинг истории сообщений из чата
     
     Args:
-        chat_entity: Объект чата (может быть username, ID или entity)
+        chat_entity: Объект чата (может быть username, хэш из ссылки-приглашения)
         limit: Максимальное количество сообщений для парсинга (None = все)
     """
     chat_id = None
     chat_title = "Unknown"
-    
     try:
-        # Получение информации о чате
-        try:
-            if isinstance(chat_entity, (int, str)):
+        # Обработка хэшей ссылок-приглашений
+        if "@" not in chat_entity:
+            try:
+                invite_hash = chat_entity.rsplit("/", 1)[-1]
+                result = await client(ImportChatInviteRequest(invite_hash))
+                chat = result.chats[0]
+            except UserAlreadyParticipantError as e:
                 chat = await client.get_entity(chat_entity)
-            else:
-                chat = chat_entity
-        except ValueError as e:
-            logger.error(f"Группа не найдена: {chat_entity}. Ошибка: {e}")
-            raise ValueError(f"Группа '{chat_entity}' не найдена. Проверьте username или ID, или убедитесь, что у вас есть доступ к группе.")
-        except Exception as e:
-            logger.error(f"Ошибка при получении информации о группе {chat_entity}: {e}")
-            raise
-        
+            except Exception as e:
+                logger.error(f"Ошибка при подключении к группе по хэшу из ссылки-приглашения {chat_entity}: {e}")
+        else:  # Если передано имя группы/чата @...
+            try:
+                # Получение информации о чате
+                if isinstance(chat_entity, (int, str)):
+                    chat = await client.get_entity(chat_entity)
+                else:
+                    chat = chat_entity
+            except ValueError as e:
+                logger.error(f"Группа не найдена: {chat_entity}. Ошибка: {e}")
+                raise ValueError(f"Группа '{chat_entity}' не найдена. Проверьте username или ID, или убедитесь, что у вас есть доступ к группе.")
+            except Exception as e:
+                logger.error(f"Ошибка при получении информации о группе {chat_entity}: {e}")
+                raise
+
         chat_info = get_chat_info(chat)
         chat_id = chat_info['chat_id']
         chat_title = chat_info['chat_title']
-        
+
         # Проверка, не идет ли уже парсинг этого чата
         if chat_id in parsing_active and parsing_active[chat_id]:
             logger.warning(f"Парсинг чата {chat_title} уже выполняется")
             return False
-        
+
         parsing_active[chat_id] = True
         logger.info(f"Начало парсинга истории чата: {chat_title} (ID: {chat_id})")
-        
+
         total_parsed = 0
         errors_count = 0
         last_message_id: int = await db.get_max_message_id_from_chat(chat_id)
-        
+
         try:
             async for message in client.iter_messages(
                 chat,
@@ -251,26 +263,42 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
                     # Пропускаем служебные сообщения
                     if message.action:
                         continue
-                    
+
                     try:
                         sender = await message.get_sender()
                     except Exception as e:
                         logger.debug(f"Не удалось получить отправителя для сообщения {message.id}: {e}")
                         sender = None
-                    
+
+                    # Проверяем, есть ли у сообщения комментарии
+                    # (Поле replies содержит информацию об ответах)
+                    # if message.replies and message.replies.replies > 0:
+                    #     logger.info(f"   └─ Найдено комментариев: {message.replies.replies}")
+                    #
+                    #     try:
+                    #         # 2. Переходим к итерации по комментариям
+                    #         # Передаем ID текущего сообщения в параметр reply_to
+                    #         async for comment in client.iter_messages(chat, reply_to=message.id):
+                    #             # logger.info(f"      💬 Комментарий [{comment.from_id}]: {comment.text}")
+                    #             await process_message(comment, chat, is_comment=True, parsed_at=parsed_at, sender=sender)
+                    #
+                    #     except Exception as e:
+                    #         print(f"      ⚠️ Не удалось прочитать комментарии: {e}")
+
+
                     success = await process_message(message, chat, parsed_at, sender)
-                    
+
                     if success:
                         total_parsed += 1
                         if total_parsed % 100 == 0:
                             logger.info(f"Обработано сообщений из {chat_title}: {total_parsed}")
                     else:
                         errors_count += 1
-                    
+
                     # Небольшая задержка, чтобы не получить FloodWait
                     if total_parsed % 50 == 0:
                         await asyncio.sleep(1)
-                        
+
                 except FloodWaitError as e:
                     logger.warning(f"FloodWait: ожидание {e.seconds} секунд...")
                     await asyncio.sleep(e.seconds)
@@ -278,7 +306,7 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
                     errors_count += 1
                     logger.error(f"Ошибка при обработке сообщения {message.id}: {e}")
                     continue
-                    
+
         except ChatAdminRequiredError:
             logger.error(f"Нет доступа к истории чата {chat_title}. Убедитесь, что бот добавлен в группу и имеет права.")
             return False
@@ -287,7 +315,7 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
             return False
         finally:
             parsing_active[chat_id] = False
-        
+
         logger.info(f"Парсинг завершен: {chat_title}. Обработано: {total_parsed}, Ошибок: {errors_count}")
         return True
         

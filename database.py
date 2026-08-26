@@ -78,8 +78,8 @@ class MessageDatabase:
 
         # Миграция: добавляем parsed_at, если колонки нет
         await self.connection.execute('''
-          ALTER TABLE messages
-          ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMP
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMP;
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_comment BOOLEAN DEFAULT False;
         ''')
 
     async def save_message(self, message_data: Dict):
