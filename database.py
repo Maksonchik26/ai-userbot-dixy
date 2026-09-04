@@ -2,6 +2,9 @@ import asyncpg
 import json
 from datetime import datetime
 from typing import Optional, List, Dict
+
+from asyncpg import UniqueViolationError
+
 from config import DATABASE_PATH
 
 
@@ -79,7 +82,9 @@ class MessageDatabase:
         # Миграция: добавляем parsed_at, если колонки нет
         await self.connection.execute('''
             ALTER TABLE messages ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMP;
-            ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_comment BOOLEAN DEFAULT False;
+            ALTER TABLE messages DROP COLUMN IF EXISTS is_comment;
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS replies_count INTEGER;
+            ALTER TABLE messages ADD COLUMN IF NOT EXISTS parent_message_id BIGINT DEFAULT NULL; 
         ''')
 
     async def save_message(self, message_data: Dict):
@@ -90,8 +95,9 @@ class MessageDatabase:
                     message_id, chat_id, chat_title, chat_type,
                     user_id, username, first_name, last_name,
                     message_text, date, is_reply, reply_to_message_id,
-                    has_media, media_type, raw_data, parsed_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    has_media, media_type, raw_data, parsed_at,
+                    replies_count, parent_message_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 RETURNING id
             ''',
                 message_data.get('message_id'),
@@ -103,18 +109,22 @@ class MessageDatabase:
                 message_data.get('first_name'),
                 message_data.get('last_name'),
                 message_data.get('message_text'),
-                    datetime.fromisoformat(message_data.get('date')).replace(tzinfo=None),
+                datetime.fromisoformat(message_data.get('date')).replace(tzinfo=None),
                 message_data.get('is_reply', 0),
                 message_data.get('reply_to_message_id'),
                 message_data.get('has_media', False),
                 message_data.get('media_type'),
                 json.dumps(message_data.get('raw_data', {})),
                 message_data.get('parsed_at'),
+                message_data.get('replies_count'),
+                message_data.get('parent_message_id'),
             )
             return row['id'] if row else None
+        except UniqueViolationError as e:
+            raise
         except Exception as e:
             print(f"Ошибка при сохранении сообщения: {e}")
-            return None
+            raise
 
     async def save_chat(self, chat_data: Dict):
         """Сохранение информации о чате"""
@@ -157,6 +167,44 @@ class MessageDatabase:
 
     async def get_max_message_id_from_chat(self, chat_id: int) -> int:
         """Получение ID последнего сообщения из чата"""
-        last_message_id = await self.connection.fetchval("SELECT MAX(message_id) FROM messages WHERE chat_id = $1", chat_id)
+        last_message_id = await self.connection.fetchval(
+            "SELECT MAX(message_id) FROM messages WHERE chat_id = $1 AND parent_message_id IS NULL",
+            chat_id,
+        )
 
         return last_message_id or 0
+
+    async def get_recent_posts_with_replies(self, chat_id: int, since_date: datetime) -> List[Dict]:
+        """
+        Получает список постов за указанный период с их счетчиками комментариев.
+
+        Args:
+        chat_id: ID чата
+        since_date: Дата, с которой нужно искать посты
+
+    Returns:
+        Список словарей: [{"message_id": 123, "replies_count": 5}, ...]
+        """
+        query = """
+                SELECT message_id, replies_count FROM messages
+                WHERE chat_id = $1 AND date >= $2 AND parent_message_id IS NULL
+                """
+
+        posts = await self.connection.fetch(query, chat_id, since_date)
+
+        return [dict(row) for row in posts]
+
+
+    async def update_message_replies_count(self, message_id: int, new_replies_count: int) -> None:
+        """
+            Обновляет количество комментариев под сообщением
+
+            Args:
+            message_id: ID сообщения-родителя (поста)
+            new_replies_count: обновленное количество комментариев
+        Returns:
+            None
+        """
+        query = "UPDATE messages SET replies_count = $1 WHERE message_id = $2"
+
+        await self.connection.execute(query, new_replies_count, message_id)

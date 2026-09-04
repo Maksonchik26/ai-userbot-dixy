@@ -25,6 +25,7 @@ CHAT_ENTITIES: str = os.getenv('CHAT_ENTITIES', "@radar_bryanskk")
 
 SCHEDULER_ON: int = int(os.getenv('SCHEDULER_ON', 0))
 SCHEDULER_PERIOD_MINUTES: int = int(os.getenv('SCHEDULER_PERIOD_MINUTES', 1))
+DAYS_BACK = int(os.getenv('DAYS_BACK', 1))
 
 # Logging settings
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

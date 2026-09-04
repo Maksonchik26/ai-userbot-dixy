@@ -1,6 +1,8 @@
 import asyncio
 import logging
 from datetime import datetime, date, timedelta, timezone
+
+from asyncpg import UniqueViolationError
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
@@ -20,6 +22,7 @@ from config import (
     PROXY_SET,
     PROXY_TYPE,
     CHAT_ENTITIES,
+    DAYS_BACK,
 )
 from database import MessageDatabase
 
@@ -120,7 +123,14 @@ def get_media_info(message):
     }
 
 
-async def process_message(message, chat, parsed_at: datetime | None = None, sender=None, is_comment: bool = False):
+async def process_message(
+    message,
+    chat,
+    parsed_at: datetime | None = None,
+    sender=None,
+    parent_message_id: int | None = None,
+    replies_count: int | None = None,
+):
     """Обработка и сохранение сообщения"""
     try:
         # Получение информации о чате
@@ -168,12 +178,23 @@ async def process_message(message, chat, parsed_at: datetime | None = None, send
                 'replies': getattr(message.replies, 'replies', None) if hasattr(message, 'replies') and message.replies else None,
             },
             'parsed_at': parsed_at,
-            'is_comment': is_comment,
+            'replies_count': replies_count,
+            'parent_message_id': parent_message_id,
         }
-        
-        # Сохранение сообщения
-        await db.save_message(message_data)
-        
+
+        # Если сообщение является комментарием
+        if parent_message_id:
+            try:
+            # Сохранение сообщения
+                await db.save_message(message_data)
+            # Исключение на случай, если коммент уже в БД. пробрасываем наружу для обработки
+            except UniqueViolationError as e:
+                logger.info(f"Сообщение/комментарий уже в БД: {e}")
+                raise
+        else:
+            await db.save_message(message_data)
+
+
         # Сохранение информации о чате
         chat_data = {
             **chat_info,
@@ -185,12 +206,108 @@ async def process_message(message, chat, parsed_at: datetime | None = None, send
         await db.save_chat(chat_data)
         
         return True
+
+    except UniqueViolationError as e:
+        raise
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
         return False
 
 
 chat_entities = [item.strip() for item in CHAT_ENTITIES.split(",") if item.strip()]
+
+
+async def sync_comments_for_recent_posts(chat, chat_id: int, parsed_at: datetime, days_back: int = 1):
+    """
+    Проверяет наличие новых комментариев к уже сохраненным в БД постам.
+    """
+    # 1. Получаем из БД ID постов и их текущий счетчик комментариев за последние N дней
+    since_date = datetime.now() - timedelta(days=days_back)
+    recent_posts = await db.get_recent_posts_with_replies(chat_id, since_date)
+
+    if not recent_posts:
+        logger.debug("Нет недавних постов для проверки комментариев.")
+        return
+
+    # Извлекаем ID постов и их счетчики из БД
+    post_ids = [p['message_id'] for p in recent_posts]
+    reply_counts_from_db = {p['message_id']: p['replies_count'] if p['replies_count'] else 0 for p in recent_posts}
+
+    # 2. БАТЧЕВЫЙ ЗАПРОС: Получаем актуальное состояние всех постов ОДНИМ запросом
+    try:
+        messages = await client.get_messages(chat, ids=post_ids)
+    except Exception as e:
+        logger.error(f"Ошибка при батчевом получении постов для проверки комментов: {e}")
+        return
+
+    # 3. Последовательно проверяем каждый пост и забираем новые комментарии
+    posts_with_new_comments = 0
+    total_new_comments = 0
+
+    for msg in messages:
+
+        if not msg or getattr(msg, 'service', False):
+            continue
+
+        # Получаем ТЕКУЩИЙ счетчик из Telegram API
+        current_reply_count = msg.replies.replies if msg.replies else 0
+
+        # Берем счетчик из БД для этого конкретного поста
+        db_reply_count = reply_counts_from_db.get(msg.id, 0)
+
+        # СИНХРОНИЗАЦИЯ: Сравниваем счетчики
+        if current_reply_count > db_reply_count:
+            # Забираем новые комментарии ПОСЛЕДОВАТЕЛЬНО
+            new_comments_count = await fetch_new_comments(msg, chat, parsed_at)
+            total_new_comments += new_comments_count
+
+            try:
+                await db.update_message_replies_count(msg.id, current_reply_count)
+                logger.info(
+                    f"   └─ Пост {msg.id}: обнаружены новые комментарии! (было {db_reply_count}, стало {current_reply_count})")
+                posts_with_new_comments += 1
+            except Exception as e:
+                logger.error(f"Ошибка при обновлении счетчика комментариев под сообщением: {e}")
+
+    logger.info(
+        f"Проверка завершена. Постов с новыми комментами: {posts_with_new_comments}, добавлено комментариев: {total_new_comments}")
+
+
+async def fetch_new_comments(message, chat, parsed_at: datetime) -> int:
+    """
+    Забирает только новые комментарии к конкретному посту.
+    Возвращает количество добавленных комментариев.
+    """
+    # Берем комментарии только за последние 24 часа
+
+    comments_added = 0
+
+    # try:
+    async for comment in client.iter_messages(
+        chat,
+        reply_to=message.id,
+    ):
+        comment_sender = await comment.get_sender()
+
+        try:
+            success = await process_message(
+                comment,
+                chat,
+                parsed_at=parsed_at,
+                sender=comment_sender,
+                parent_message_id=message.id,
+            )
+        except UniqueViolationError as e:
+            logger.info(f"Все комментарии под сообщением с id={message.id} обработаны")
+            return comments_added
+
+        if success:
+            comments_added += 1
+
+    # except Exception as e:
+    #     logger.warning(f"Не удалось забрать комментарии к посту {message.id}: {e}")
+
+    return comments_added
 
 
 async def parse_some_chats():
@@ -214,11 +331,13 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
         # Обработка хэшей ссылок-приглашений
         if "@" not in chat_entity:
             try:
+                chat = await client.get_entity(chat_entity)
+            except ValueError as e:
+                # TODO ПОДУМАТЬ КАК КОРРЕКТНЕЕ ОБРАБАТЫВАТЬ ЭТО
                 invite_hash = chat_entity.rsplit("/", 1)[-1]
                 result = await client(ImportChatInviteRequest(invite_hash))
                 chat = result.chats[0]
-            except UserAlreadyParticipantError as e:
-                chat = await client.get_entity(chat_entity)
+                logger.info(f"Успешное присоединение к чату {chat.title} по ссылке-приглашению: {e}")
             except Exception as e:
                 logger.error(f"Ошибка при подключении к группе по хэшу из ссылки-приглашения {chat_entity}: {e}")
         else:  # Если передано имя группы/чата @...
@@ -252,6 +371,9 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
         last_message_id: int = await db.get_max_message_id_from_chat(chat_id)
 
         try:
+            # ============================
+            # ФАЗА 1: Парсинг НОВЫХ постов
+            # ============================
             async for message in client.iter_messages(
                 chat,
                 limit=limit,
@@ -269,22 +391,6 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
                     except Exception as e:
                         logger.debug(f"Не удалось получить отправителя для сообщения {message.id}: {e}")
                         sender = None
-
-                    # Проверяем, есть ли у сообщения комментарии
-                    # (Поле replies содержит информацию об ответах)
-                    # if message.replies and message.replies.replies > 0:
-                    #     logger.info(f"   └─ Найдено комментариев: {message.replies.replies}")
-                    #
-                    #     try:
-                    #         # 2. Переходим к итерации по комментариям
-                    #         # Передаем ID текущего сообщения в параметр reply_to
-                    #         async for comment in client.iter_messages(chat, reply_to=message.id):
-                    #             # logger.info(f"      💬 Комментарий [{comment.from_id}]: {comment.text}")
-                    #             await process_message(comment, chat, is_comment=True, parsed_at=parsed_at, sender=sender)
-                    #
-                    #     except Exception as e:
-                    #         print(f"      ⚠️ Не удалось прочитать комментарии: {e}")
-
 
                     success = await process_message(message, chat, parsed_at, sender)
 
@@ -307,6 +413,15 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
                     logger.error(f"Ошибка при обработке сообщения {message.id}: {e}")
                     continue
 
+            # ========================================================
+            # ФАЗА 2: Мониторинг комментариев к УЖЕ СОХРАНЕННЫМ постам
+            # ========================================================
+            logger.info(f"Фаза 2: Проверка новых комментариев к недавним постам в {chat_title}...")
+            await sync_comments_for_recent_posts(chat, chat_id, parsed_at, days_back=DAYS_BACK)
+
+            logger.info(f"Парсинг завершен: {chat_title}. Обработано новых постов: {total_parsed}")
+            return True
+
         except ChatAdminRequiredError:
             logger.error(f"Нет доступа к истории чата {chat_title}. Убедитесь, что бот добавлен в группу и имеет права.")
             return False
@@ -315,9 +430,6 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
             return False
         finally:
             parsing_active[chat_id] = False
-
-        logger.info(f"Парсинг завершен: {chat_title}. Обработано: {total_parsed}, Ошибок: {errors_count}")
-        return True
         
     except Exception as e:
         logger.error(f"Критическая ошибка при парсинге чата: {e}", exc_info=True)
