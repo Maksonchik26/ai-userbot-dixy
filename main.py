@@ -2,7 +2,7 @@ import asyncio
 import httpx
 
 from api.main import start_fastapi
-from userbot import logger, db, client
+from userbot import logger, db, client, ChatManager
 from config import (
     SESSION_NAME,
     STRING_SESSION,
@@ -37,8 +37,8 @@ async def main():
         logger.info("Используется STRING_SESSION из переменных окружения")
 
         asyncio.create_task(start_fastapi())
-        if SCHEDULER_ON:
-            asyncio.create_task(simple_scheduler(SCHEDULER_PERIOD_MINUTES))
+        # if SCHEDULER_ON:
+        #     asyncio.create_task(simple_scheduler(SCHEDULER_PERIOD_MINUTES))
         await client.start()
     else:
         # Проверяем наличие файла сессии
@@ -69,8 +69,8 @@ async def main():
                     f"Файл сессии {session_file} не найден. Загрузите его на сервер или авторизуйтесь локально.")
         else:
             asyncio.create_task(start_fastapi())
-            if SCHEDULER_ON:
-                asyncio.create_task(simple_scheduler(1))
+            # if SCHEDULER_ON:
+            #     asyncio.create_task(simple_scheduler(1))
             await client.start()
 
     logger.info("Userbot запущен и готов к работе!")
@@ -89,6 +89,10 @@ async def main():
     logger.info("  /parse @username - парсинг истории чата")
     logger.info("  /stats - статистика")
     logger.info("  /help - справка")
+
+    # Запуск функции добавление отсутствующих чатов
+    chat_manager = ChatManager()
+    join_task = asyncio.create_task(chat_manager.add_new_chats())
 
     # Запуск в режиме ожидания
     await client.run_until_disconnected()

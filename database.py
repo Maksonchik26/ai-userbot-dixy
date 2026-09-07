@@ -83,8 +83,9 @@ class MessageDatabase:
         await self.connection.execute('''
             ALTER TABLE messages ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMP;
             ALTER TABLE messages DROP COLUMN IF EXISTS is_comment;
-            ALTER TABLE messages ADD COLUMN IF NOT EXISTS replies_count INTEGER;
-            ALTER TABLE messages ADD COLUMN IF NOT EXISTS parent_message_id BIGINT DEFAULT NULL; 
+            ALTER TABLE messages DROP COLUMN IF EXISTS replies_count;
+            ALTER TABLE messages DROP COLUMN IF EXISTS parent_message_id; 
+            ALTER TABLE chats ADD COLUMN IF NOT EXISTS connecting_name TEXT DEFAULT NULL; 
         ''')
 
     async def save_message(self, message_data: Dict):
@@ -95,9 +96,8 @@ class MessageDatabase:
                     message_id, chat_id, chat_title, chat_type,
                     user_id, username, first_name, last_name,
                     message_text, date, is_reply, reply_to_message_id,
-                    has_media, media_type, raw_data, parsed_at,
-                    replies_count, parent_message_id
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    has_media, media_type, raw_data, parsed_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 RETURNING id
             ''',
                 message_data.get('message_id'),
@@ -116,8 +116,6 @@ class MessageDatabase:
                 message_data.get('media_type'),
                 json.dumps(message_data.get('raw_data', {})),
                 message_data.get('parsed_at'),
-                message_data.get('replies_count'),
-                message_data.get('parent_message_id'),
             )
             return row['id'] if row else None
         except UniqueViolationError as e:
@@ -132,21 +130,16 @@ class MessageDatabase:
             await self.connection.execute('''
                 INSERT INTO chats (
                     chat_id, chat_title, chat_type, participants_count,
-                    last_activity, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (chat_id) DO UPDATE SET
-                    chat_title = EXCLUDED.chat_title,
-                    chat_type = EXCLUDED.chat_type,
-                    participants_count = EXCLUDED.participants_count,
-                    last_activity = EXCLUDED.last_activity,
-                    metadata = EXCLUDED.metadata
+                    last_activity, metadata, connecting_name
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
             ''',
                 chat_data.get('chat_id'),
                 chat_data.get('chat_title'),
                 chat_data.get('chat_type'),
                 chat_data.get('participants_count'),
                 datetime.now(),
-                json.dumps(chat_data.get('metadata', {}))
+                json.dumps(chat_data.get('metadata', {})),
+                chat_data.get('connecting_name'),
             )
         except Exception as e:
             print(f"Ошибка при сохранении чата: {e}")

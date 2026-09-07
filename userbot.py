@@ -1,12 +1,13 @@
 import asyncio
 import logging
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, timedelta
 
 from asyncpg import UniqueViolationError
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 from telethon.tl.types import User, Chat, Channel
-from telethon.errors import FloodWaitError, ChatAdminRequiredError, UserAlreadyParticipantError
+from telethon.errors import FloodWaitError, ChatAdminRequiredError, UserAlreadyParticipantError, InviteRequestSentError
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from config import (
     API_ID,
@@ -128,8 +129,6 @@ async def process_message(
     chat,
     parsed_at: datetime | None = None,
     sender=None,
-    parent_message_id: int | None = None,
-    replies_count: int | None = None,
 ):
     """Обработка и сохранение сообщения"""
     try:
@@ -178,33 +177,9 @@ async def process_message(
                 'replies': getattr(message.replies, 'replies', None) if hasattr(message, 'replies') and message.replies else None,
             },
             'parsed_at': parsed_at,
-            'replies_count': replies_count,
-            'parent_message_id': parent_message_id,
         }
 
-        # Если сообщение является комментарием
-        if parent_message_id:
-            try:
-            # Сохранение сообщения
-                await db.save_message(message_data)
-            # Исключение на случай, если коммент уже в БД. пробрасываем наружу для обработки
-            except UniqueViolationError as e:
-                logger.info(f"Сообщение/комментарий уже в БД: {e}")
-                raise
-        else:
-            await db.save_message(message_data)
-
-
-        # Сохранение информации о чате
-        chat_data = {
-            **chat_info,
-            'metadata': {
-                'access_hash': getattr(chat, 'access_hash', None),
-                'username': getattr(chat, 'username', None)
-            }
-        }
-        await db.save_chat(chat_data)
-        
+        await db.save_message(message_data)
         return True
 
     except UniqueViolationError as e:
@@ -214,7 +189,7 @@ async def process_message(
         return False
 
 
-chat_entities = [item.strip() for item in CHAT_ENTITIES.split(",") if item.strip()]
+CHAT_ENTITIES_LIST = [item.strip() for item in CHAT_ENTITIES.split(",") if item.strip()]
 
 
 async def sync_comments_for_recent_posts(chat, chat_id: int, parsed_at: datetime, days_back: int = 1):
@@ -222,7 +197,7 @@ async def sync_comments_for_recent_posts(chat, chat_id: int, parsed_at: datetime
     Проверяет наличие новых комментариев к уже сохраненным в БД постам.
     """
     # 1. Получаем из БД ID постов и их текущий счетчик комментариев за последние N дней
-    since_date = datetime.now() - timedelta(days=days_back)
+    since_date = datetime.now() - timedelta(hours=5)
     recent_posts = await db.get_recent_posts_with_replies(chat_id, since_date)
 
     if not recent_posts:
@@ -310,11 +285,11 @@ async def fetch_new_comments(message, chat, parsed_at: datetime) -> int:
     return comments_added
 
 
-async def parse_some_chats():
-    parsed_at = datetime.now()
-
-    for chat_entity in chat_entities:
-        await parse_chat_history(chat_entity, parsed_at)
+# async def parse_some_chats():
+#     parsed_at = datetime.now()
+#
+#     for chat_entity in CHAT_ENTITIES_LIST:
+#         await parse_chat_history(chat_entity, parsed_at)
 
 
 async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
@@ -357,6 +332,32 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
         chat_info = get_chat_info(chat)
         chat_id = chat_info['chat_id']
         chat_title = chat_info['chat_title']
+
+        try:
+            # Запрашиваем ПОЛНУЮ информацию о канале
+            full_channel = await client(GetFullChannelRequest(channel=chat))
+
+            # Достаем ID группы обсуждений
+            linked_chat_id = full_channel.full_chat.linked_chat_id
+
+            if linked_chat_id:
+                logger.info(f"✅ Найдена группа обсуждений канала: {chat.title}! Её ID: {linked_chat_id}")
+
+                # Опционально: сразу вступаем в неё, чтобы юзербот мог читать комментарии
+                try:
+                    await client(JoinChannelRequest(linked_chat_id))
+                    # await client(
+                    #     GetFullChannelRequest(channel=InputChannel(linked_chat_id, 0)))  # Простая проверка/вступление
+                    # Или проще: await client(JoinChannelRequest(linked_chat_id))
+                    logger.info("✅ Юзербот теперь может читать сообщения в этой группе.")
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ Не удалось вступить автоматически. Зайдите в группу вручную через кнопку 'Прокомментировать' в канале.")
+            else:
+                logger.info("❌ У этого канала НЕТ привязанной группы обсуждений (комментарии отключены).")
+
+        except Exception as e:
+            print(f"Ошибка при получении данных: {e}")
 
         # Проверка, не идет ли уже парсинг этого чата
         if chat_id in parsing_active and parsing_active[chat_id]:
@@ -472,117 +473,117 @@ async def handler(event):
         logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
 
 
-@client.on(events.MessageEdited)
-async def handler_edited(event):
-    """Обработчик отредактированных сообщений"""
-    try:
-        parsed_at = datetime.now()
-
-        message = event.message
-        chat = await event.get_chat()
-        sender = await event.get_sender()
-        
-        await process_message(message, chat, parsed_at, sender)
-        logger.debug(f"Отредактировано сообщение в чате {event.chat_id}")
-    except Exception as e:
-        logger.error(f"Ошибка при обработке отредактированного сообщения: {e}", exc_info=True)
+# @client.on(events.MessageEdited)
+# async def handler_edited(event):
+#     """Обработчик отредактированных сообщений"""
+#     try:
+#         parsed_at = datetime.now()
+#
+#         message = event.message
+#         chat = await event.get_chat()
+#         sender = await event.get_sender()
+#
+#         await process_message(message, chat, parsed_at, sender)
+#         logger.debug(f"Отредактировано сообщение в чате {event.chat_id}")
+#     except Exception as e:
+#         logger.error(f"Ошибка при обработке отредактированного сообщения: {e}", exc_info=True)
 
 
 # Обработчик команды /parse - используем более гибкий паттерн
-@client.on(events.NewMessage(pattern=r'^/parse'))
-async def parse_command_handler(event):
-    """Обработчик команды /parse для парсинга истории чата"""
-    try:
-        # Логируем СРАЗУ при срабатывании обработчика
-        message_text = event.message.text or ""
-        chat_id = event.chat_id
-        
-        logger.info(f"🎯 ОБРАБОТЧИК /parse СРАБОТАЛ! Сообщение: '{message_text}' | chat_id: {chat_id}")
-        
-        # Получаем информацию о себе для проверки Saved Messages
-        me = await client.get_me()
-        is_saved_messages = (chat_id == me.id)
-        
-        logger.info(f"🔍 Детали: is_private: {event.is_private} | is_saved: {is_saved_messages} | my_id: {me.id}")
-        
-        # Команда работает в личных сообщениях (включая Saved Messages)
-        # Saved Messages имеет chat_id равный вашему user_id
-        if not event.is_private and not is_saved_messages:
-            logger.warning(f"⚠️ Сообщение не из личного чата. Chat ID: {chat_id}, My ID: {me.id}")
-            return
-        
-        # Получаем аргументы команды - парсим вручную из текста сообщения
-        # Формат: /parse @username или /parse @username limit=1000
-        parts = message_text.split(None, 1)  # Разделяем по пробелам, максимум 2 части
-        if len(parts) < 2 and message_text != "/parse_all":
-            await event.respond(
-                "❌ Неверный формат команды. Используйте: `/parse @username`, или `/parse @username limit=1000`, или `/parse_all`")
-            return
-
-        args = parts[1].strip()  # Все что после /parse
-        
-        # Парсим аргументы: /parse @username или /parse @username limit=1000
-        args_parts = args.split()
-        chat_identifier = args_parts[0]
-        limit = None
-        
-        logger.info(f"📋 Парсинг аргументов: chat_identifier='{chat_identifier}', остальное='{args_parts[1:] if len(args_parts) > 1 else []}'")
-        
-        # Поиск параметра limit
-        for part in args_parts[1:]:
-            if part.startswith('limit='):
-                try:
-                    limit = int(part.split('=')[1])
-                    logger.info(f"📊 Установлен лимит: {limit}")
-                except ValueError:
-                    logger.warning(f"⚠️ Неверный формат limit: {part}")
-                    pass
-        
-        await event.respond(f"🔄 Начинаю парсинг чата: {chat_identifier}\n⏳ Это может занять некоторое время...")
-        
-        # Запускаем парсинг в фоне
-        try:
-            success = await parse_chat_history(chat_identifier, limit=limit)
-            
-            if success:
-                count = await db.get_messages_count()  # Получаем общее количество
-                await event.respond(
-                    f"✅ Парсинг завершен!\n"
-                    f"📊 Всего сообщений в базе: {count}\n"
-                    f"💾 Используйте /stats для детальной статистики"
-                )
-            else:
-                await event.respond(
-                    "❌ Ошибка при парсинге.\n"
-                    "Возможные причины:\n"
-                    "• Группа приватная и вы не участник\n"
-                    "• Неправильный username или ID\n"
-                    "• Нет доступа к истории сообщений\n\n"
-                    "Проверьте логи для подробностей."
-                )
-        except ValueError as e:
-            # Ошибка при получении entity (группа не найдена)
-            await event.respond(
-                f"❌ Группа не найдена: {chat_identifier}\n\n"
-                "Проверьте:\n"
-                "• Правильность username (например: @groupname)\n"
-                "• Правильность ID группы\n"
-                "• Доступ к группе (для приватных групп нужно быть участником)"
-            )
-        except Exception as e:
-            error_msg = str(e)
-            if "username" in error_msg.lower() or "not found" in error_msg.lower():
-                await event.respond(
-                    f"❌ Группа не найдена или нет доступа.\n"
-                    f"Ошибка: {error_msg}\n\n"
-                    "Для приватных групп нужно быть участником."
-                )
-            else:
-                await event.respond(f"❌ Ошибка: {error_msg}\nПроверьте логи для подробностей.")
-            
-    except Exception as e:
-        logger.error(f"Ошибка в команде /parse: {e}", exc_info=True)
-        await event.respond(f"❌ Критическая ошибка: {str(e)}")
+# @client.on(events.NewMessage(pattern=r'^/parse'))
+# async def parse_command_handler(event):
+#     """Обработчик команды /parse для парсинга истории чата"""
+#     try:
+#         # Логируем СРАЗУ при срабатывании обработчика
+#         message_text = event.message.text or ""
+#         chat_id = event.chat_id
+#
+#         logger.info(f"🎯 ОБРАБОТЧИК /parse СРАБОТАЛ! Сообщение: '{message_text}' | chat_id: {chat_id}")
+#
+#         # Получаем информацию о себе для проверки Saved Messages
+#         me = await client.get_me()
+#         is_saved_messages = (chat_id == me.id)
+#
+#         logger.info(f"🔍 Детали: is_private: {event.is_private} | is_saved: {is_saved_messages} | my_id: {me.id}")
+#
+#         # Команда работает в личных сообщениях (включая Saved Messages)
+#         # Saved Messages имеет chat_id равный вашему user_id
+#         if not event.is_private and not is_saved_messages:
+#             logger.warning(f"⚠️ Сообщение не из личного чата. Chat ID: {chat_id}, My ID: {me.id}")
+#             return
+#
+#         # Получаем аргументы команды - парсим вручную из текста сообщения
+#         # Формат: /parse @username или /parse @username limit=1000
+#         parts = message_text.split(None, 1)  # Разделяем по пробелам, максимум 2 части
+#         if len(parts) < 2 and message_text != "/parse_all":
+#             await event.respond(
+#                 "❌ Неверный формат команды. Используйте: `/parse @username`, или `/parse @username limit=1000`, или `/parse_all`")
+#             return
+#
+#         args = parts[1].strip()  # Все что после /parse
+#
+#         # Парсим аргументы: /parse @username или /parse @username limit=1000
+#         args_parts = args.split()
+#         chat_identifier = args_parts[0]
+#         limit = None
+#
+#         logger.info(f"📋 Парсинг аргументов: chat_identifier='{chat_identifier}', остальное='{args_parts[1:] if len(args_parts) > 1 else []}'")
+#
+#         # Поиск параметра limit
+#         for part in args_parts[1:]:
+#             if part.startswith('limit='):
+#                 try:
+#                     limit = int(part.split('=')[1])
+#                     logger.info(f"📊 Установлен лимит: {limit}")
+#                 except ValueError:
+#                     logger.warning(f"⚠️ Неверный формат limit: {part}")
+#                     pass
+#
+#         await event.respond(f"🔄 Начинаю парсинг чата: {chat_identifier}\n⏳ Это может занять некоторое время...")
+#
+#         # Запускаем парсинг в фоне
+#         try:
+#             success = await parse_chat_history(chat_identifier, limit=limit)
+#
+#             if success:
+#                 count = await db.get_messages_count()  # Получаем общее количество
+#                 await event.respond(
+#                     f"✅ Парсинг завершен!\n"
+#                     f"📊 Всего сообщений в базе: {count}\n"
+#                     f"💾 Используйте /stats для детальной статистики"
+#                 )
+#             else:
+#                 await event.respond(
+#                     "❌ Ошибка при парсинге.\n"
+#                     "Возможные причины:\n"
+#                     "• Группа приватная и вы не участник\n"
+#                     "• Неправильный username или ID\n"
+#                     "• Нет доступа к истории сообщений\n\n"
+#                     "Проверьте логи для подробностей."
+#                 )
+#         except ValueError as e:
+#             # Ошибка при получении entity (группа не найдена)
+#             await event.respond(
+#                 f"❌ Группа не найдена: {chat_identifier}\n\n"
+#                 "Проверьте:\n"
+#                 "• Правильность username (например: @groupname)\n"
+#                 "• Правильность ID группы\n"
+#                 "• Доступ к группе (для приватных групп нужно быть участником)"
+#             )
+#         except Exception as e:
+#             error_msg = str(e)
+#             if "username" in error_msg.lower() or "not found" in error_msg.lower():
+#                 await event.respond(
+#                     f"❌ Группа не найдена или нет доступа.\n"
+#                     f"Ошибка: {error_msg}\n\n"
+#                     "Для приватных групп нужно быть участником."
+#                 )
+#             else:
+#                 await event.respond(f"❌ Ошибка: {error_msg}\nПроверьте логи для подробностей.")
+#
+#     except Exception as e:
+#         logger.error(f"Ошибка в команде /parse: {e}", exc_info=True)
+#         await event.respond(f"❌ Критическая ошибка: {str(e)}")
 
 
 @client.on(events.NewMessage(pattern=r'^/stats$', incoming=True, from_users=None))
@@ -644,3 +645,187 @@ async def help_command_handler(event):
         
     except Exception as e:
         logger.error(f"Ошибка в команде /help: {e}", exc_info=True)
+
+
+class ChatManager:
+    def __init__(self):
+        self.chat_connecting_names = set()
+        self.flood_chats = []
+        self.dead_chats = []
+
+
+    async def set_chat_connecting_names(self):
+        chats = await db.get_chats()
+        for chat in chats:
+            self.chat_connecting_names.add(chat['connecting_name'])
+
+    async def attempt_chat_join(self, chat_entity):
+        try:
+            await self.connect_to_chat_or_channel(chat_entity)
+            await asyncio.sleep(40)
+        except FloodWaitError as e:
+            logger.error(
+                f"Возникла ошибка FloodWaitError, делаю sleep на {e.seconds} секунд. Добавляю чат в список на retry")
+            self.flood_chats.append(chat_entity)
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            logger.error(f"Возникла ошибка при обработке чата. Добавляю чат в dead_chats: {e}")
+            self.dead_chats.append(
+                {
+                    "chat_entity": chat_entity,
+                    "exception": e,
+                }
+            )
+
+
+    async def add_new_chats(self) -> None:
+        await self.set_chat_connecting_names()
+
+        for chat_entity in CHAT_ENTITIES_LIST:
+            if chat_entity in self.chat_connecting_names:
+                continue
+            await self.attempt_chat_join(chat_entity)
+
+        while len(self.flood_chats) > 0:
+            # Берем элемент с начала, т.к. новый добавляются в конец
+            #TODO рассмотреть вариант использования очередей
+            chat_entity = self.flood_chats.pop(0)
+            await self.attempt_chat_join(chat_entity)
+
+        logger.info("Вступление во все возможные чаты завершено.")
+        logger.info(f"Чаты куда не получилось присоединиться: {self.dead_chats}")
+
+
+    async def connect_to_chat_or_channel(self, chat_entity: str):
+        # if chat_entity not in self.chats:
+        try:
+            # Обработка хэшей ссылок-приглашений
+            if "@" not in chat_entity:
+                try:
+                    chanel = await client.get_entity(chat_entity)
+                    # Добавление чата в БД
+                    chat_info = get_chat_info(chanel)
+                    chat_data = {
+                        **chat_info,
+                        "connecting_name": chat_entity,
+                    }
+
+                    # Сохраняем чат в БД
+                    try:
+                        await db.save_chat(chat_data)
+                        logger.info(
+                            f"Успешное присоединение к чату {chanel.title} с ID: {chanel.id} по ссылке-приглашению")
+                    except Exception as e:
+                        logger.error(
+                            f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}"
+                        )
+                        raise e
+
+                except ValueError as e:
+                    invite_hash = chat_entity.rsplit("/", 1)[-1]
+                    result = await client(ImportChatInviteRequest(invite_hash))
+                    chanel = result.chats[0]
+
+                    # Добавление чата в БД
+                    chat_info = get_chat_info(chanel)
+                    chat_data = {
+                        **chat_info,
+                        "connecting_name": chat_entity,
+                    }
+
+                    # Сохраняем чат в БД
+                    try:
+                        await db.save_chat(chat_data)
+                        logger.info(
+                            f"Успешное присоединение к чату {chanel.title} с ID: {chanel.id} по ссылке-приглашению")
+                    except Exception as e:
+                        logger.error(
+                            f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}"
+                        )
+                        raise e
+
+            else:  # Если передано имя группы/чата @...
+                try:
+                    # Получение информации о чате
+                    if isinstance(chat_entity, (int, str)):
+                        base_updates = await client(JoinChannelRequest(chat_entity))
+                        chanel = base_updates.chats[0]
+                        chat_info = get_chat_info(chanel)
+                        chat_data = {
+                            **chat_info,
+                            "connecting_name": chat_entity,
+                        }
+
+                        # Сохраняем чат в БД
+                        try:
+                            await db.save_chat(chat_data)
+                            logger.info(f"Успешное присоединение к чату {chanel.title} с ID: {chanel.id} по ссылке-приглашению")
+                        except Exception as e:
+                            logger.error(
+                                f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}"
+                            )
+                            raise e
+                    # else:
+                    #     chat = chat_entity
+                except ValueError as e:
+                    logger.error(f"Группа не найдена: {chat_entity}. Ошибка: {e}")
+                    raise ValueError(
+                        f"Группа '{chat_entity}' не найдена. Проверьте username или ID, или убедитесь, что у вас есть доступ к группе.")
+                except FloodWaitError as e:
+                    logger.error(f"Ошибка флуда при вступлении в {chat_entity}: {e}")
+                    raise e
+                except Exception as e:
+                    logger.error(f"Ошибка при получении информации о группе {chat_entity}: {e}")
+                    raise e
+
+            try:
+                # Запрашиваем ПОЛНУЮ информацию о канале
+                full_channel = await client(GetFullChannelRequest(channel=chanel))
+
+                # Достаем ID группы обсуждений
+                linked_chat_id = full_channel.full_chat.linked_chat_id
+
+                if linked_chat_id:
+                    logger.info(f"✅ Найдена группа обсуждений канала: {chanel.title}! Её ID: {linked_chat_id}")
+
+                    # Сразу вступаем в неё, чтобы юзербот мог читать комментарии
+                    try:
+                        # Объект канала с комментами (обсуждениями)
+                        discussion_updates = await client(JoinChannelRequest(linked_chat_id))
+                        comments_chat = discussion_updates.chats[0]
+                        logger.info("✅ Юзербот теперь может читать сообщения в этой группе.")
+
+                        chat_info = get_chat_info(comments_chat)
+                        chat_data = {
+                            **chat_info,
+                            "connecting_name": None,
+                        }
+
+                        # Сохраняем чат в БД
+                        try:
+                            await db.save_chat(chat_data)
+                        except Exception as e:
+                            logger.error(f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}")
+
+                    except UserAlreadyParticipantError:
+                        # Это нормальная ситуация — мы уже внутри
+                        logger.debug(f"ℹ️ Юзербот уже состоит в группе обсуждений {linked_chat_id} канала '{chanel.title}'")
+
+                    except InviteRequestSentError:
+                        logger.warning(
+                            f"⏳ Запрос на вступление в группу обсуждений {linked_chat_id} канала '{chanel.title}' отправлен. "
+                            f"Ждем одобрения админа."
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ Не удалось вступить автоматически. Зайдите в группу вручную через кнопку 'Прокомментировать' в канале: {e}")
+
+                else:
+                    logger.info(f"❌ У этого канала {chanel.title} НЕТ привязанной группы обсуждений (комментарии отключены).")
+
+            except Exception as e:
+                logger.error(f"Ошибка при получении данных о канале для обсуждений {chanel.title}: {e}")
+
+        except Exception as e:
+            logger.error(f"Ошибка при попытке подключения к каналу/группе {chat_entity}: {e}")
+            raise e
