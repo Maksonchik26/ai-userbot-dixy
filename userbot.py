@@ -653,179 +653,181 @@ class ChatManager:
         self.flood_chats = []
         self.dead_chats = []
 
-
     async def set_chat_connecting_names(self):
         chats = await db.get_chats()
         for chat in chats:
-            self.chat_connecting_names.add(chat['connecting_name'])
+            if chat.get('connecting_name'):
+                self.chat_connecting_names.add(chat['connecting_name'])
 
     async def attempt_chat_join(self, chat_entity):
         try:
             await self.connect_to_chat_or_channel(chat_entity)
-            await asyncio.sleep(40)
-        except FloodWaitError as e:
-            logger.error(
-                f"Возникла ошибка FloodWaitError, делаю sleep на {e.seconds} секунд. Добавляю чат в список на retry")
-            self.flood_chats.append(chat_entity)
-            await asyncio.sleep(e.seconds)
-        except Exception as e:
-            logger.error(f"Возникла ошибка при обработке чата. Добавляю чат в dead_chats: {e}")
-            self.dead_chats.append(
-                {
-                    "chat_entity": chat_entity,
-                    "exception": e,
-                }
-            )
+            await asyncio.sleep(5)
 
+            await db.log_chat_attempt(chat_entity, 'success')
+            return 'success'
+
+        except FloodWaitError as e:
+            logger.error(f"FloodWaitError: {chat_entity}, sleep {e.seconds} сек.")
+            await asyncio.sleep(e.seconds)
+            return 'flood'
+
+        except Exception as e:
+            error_msg = str(e)
+            if "lack permission" in error_msg.lower() or "channel specified is private" in error_msg.lower():
+                logger.warning(f"Чат {chat_entity} — приватный/обсуждение, вступить напрямую нельзя")
+                await db.log_chat_attempt(chat_entity, 'permission_denied', error_msg)
+                return 'dead'
+
+            logger.error(f"Ошибка при подключении к {chat_entity}: {e}")
+            await db.log_chat_attempt(chat_entity, 'error', error_msg)
+            return 'dead'
 
     async def add_new_chats(self) -> None:
         await self.set_chat_connecting_names()
 
+        failed_chats = await db.get_failed_chats()
+        logger.info(f"Загружено {len(failed_chats)} провалившихся чатов из БД")
+
+        flood_chats = []
+
         for chat_entity in CHAT_ENTITIES_LIST:
             if chat_entity in self.chat_connecting_names:
                 continue
-            await self.attempt_chat_join(chat_entity)
 
-        while len(self.flood_chats) > 0:
-            # Берем элемент с начала, т.к. новый добавляются в конец
-            #TODO рассмотреть вариант использования очередей
-            chat_entity = self.flood_chats.pop(0)
-            await self.attempt_chat_join(chat_entity)
+            if chat_entity in failed_chats:
+                logger.info(f"Пропускаю {chat_entity} — уже провалился ранее (см. таблицу chat_join_log)")
+                continue
 
-        logger.info("Вступление во все возможные чаты завершено.")
-        logger.info(f"Чаты куда не получилось присоединиться: {self.dead_chats}")
+            result = await self.attempt_chat_join(chat_entity)
 
+            if result == 'flood':
+                flood_chats.append(chat_entity)
+            elif result == 'dead':
+                failed_chats.add(chat_entity)
+
+        max_retries = 3
+        retry_count = 0
+
+        while flood_chats and retry_count < max_retries:
+            retry_count += 1
+            logger.info(f"Retry #{retry_count} для {len(flood_chats)} чатов")
+
+            current_batch = flood_chats.copy()
+            flood_chats.clear()
+
+            for chat_entity in current_batch:
+                result = await self.attempt_chat_join(chat_entity)
+
+                if result == 'flood':
+                    flood_chats.append(chat_entity)
+                elif result == 'dead':
+                    failed_chats.add(chat_entity)
+
+        for chat_entity in flood_chats:
+            await db.log_chat_attempt(chat_entity, 'flood_dead', f'Не удалось после {max_retries} попыток')
+            logger.warning(f"Чат {chat_entity} не подключён после {max_retries} попыток")
+
+        logger.info(f"Итого провалившихся чатов в БД: {len(failed_chats)}")
 
     async def connect_to_chat_or_channel(self, chat_entity: str):
-        # if chat_entity not in self.chats:
         try:
-            # Обработка хэшей ссылок-приглашений
+            # 1. Вступление в основной канал/группу
             if "@" not in chat_entity:
                 try:
                     chanel = await client.get_entity(chat_entity)
-                    # Добавление чата в БД
-                    chat_info = get_chat_info(chanel)
-                    chat_data = {
-                        **chat_info,
-                        "connecting_name": chat_entity,
-                    }
-
-                    # Сохраняем чат в БД
-                    try:
-                        await db.save_chat(chat_data)
-                        logger.info(
-                            f"Успешное присоединение к чату {chanel.title} с ID: {chanel.id} по ссылке-приглашению")
-                    except Exception as e:
-                        logger.error(
-                            f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}"
-                        )
-                        raise e
-
-                except ValueError as e:
+                except ValueError:
                     invite_hash = chat_entity.rsplit("/", 1)[-1]
                     result = await client(ImportChatInviteRequest(invite_hash))
                     chanel = result.chats[0]
+            else:
+                base_updates = await client(JoinChannelRequest(chat_entity))
+                chanel = base_updates.chats[0]
 
-                    # Добавление чата в БД
-                    chat_info = get_chat_info(chanel)
-                    chat_data = {
-                        **chat_info,
-                        "connecting_name": chat_entity,
-                    }
+            # Сохраняем основной канал в БД
+            chat_info = get_chat_info(chanel)
+            chat_data = {
+                **chat_info,
+                "connecting_name": chat_entity,
+            }
+            await db.save_chat(chat_data)
+            logger.info(f"✅ Успешно подключен и сохранен основной чат: {chanel.title} ({chat_entity})")
 
-                    # Сохраняем чат в БД
-                    try:
-                        await db.save_chat(chat_data)
-                        logger.info(
-                            f"Успешное присоединение к чату {chanel.title} с ID: {chanel.id} по ссылке-приглашению")
-                    except Exception as e:
-                        logger.error(
-                            f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}"
-                        )
-                        raise e
-
-            else:  # Если передано имя группы/чата @...
-                try:
-                    # Получение информации о чате
-                    if isinstance(chat_entity, (int, str)):
-                        base_updates = await client(JoinChannelRequest(chat_entity))
-                        chanel = base_updates.chats[0]
-                        chat_info = get_chat_info(chanel)
-                        chat_data = {
-                            **chat_info,
-                            "connecting_name": chat_entity,
-                        }
-
-                        # Сохраняем чат в БД
-                        try:
-                            await db.save_chat(chat_data)
-                            logger.info(f"Успешное присоединение к чату {chanel.title} с ID: {chanel.id} по ссылке-приглашению")
-                        except Exception as e:
-                            logger.error(
-                                f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}"
-                            )
-                            raise e
-                    # else:
-                    #     chat = chat_entity
-                except ValueError as e:
-                    logger.error(f"Группа не найдена: {chat_entity}. Ошибка: {e}")
-                    raise ValueError(
-                        f"Группа '{chat_entity}' не найдена. Проверьте username или ID, или убедитесь, что у вас есть доступ к группе.")
-                except FloodWaitError as e:
-                    logger.error(f"Ошибка флуда при вступлении в {chat_entity}: {e}")
-                    raise e
-                except Exception as e:
-                    logger.error(f"Ошибка при получении информации о группе {chat_entity}: {e}")
-                    raise e
-
-            try:
-                # Запрашиваем ПОЛНУЮ информацию о канале
-                full_channel = await client(GetFullChannelRequest(channel=chanel))
-
-                # Достаем ID группы обсуждений
-                linked_chat_id = full_channel.full_chat.linked_chat_id
-
-                if linked_chat_id:
-                    logger.info(f"✅ Найдена группа обсуждений канала: {chanel.title}! Её ID: {linked_chat_id}")
-
-                    # Сразу вступаем в неё, чтобы юзербот мог читать комментарии
-                    try:
-                        # Объект канала с комментами (обсуждениями)
-                        discussion_updates = await client(JoinChannelRequest(linked_chat_id))
-                        comments_chat = discussion_updates.chats[0]
-                        logger.info("✅ Юзербот теперь может читать сообщения в этой группе.")
-
-                        chat_info = get_chat_info(comments_chat)
-                        chat_data = {
-                            **chat_info,
-                            "connecting_name": None,
-                        }
-
-                        # Сохраняем чат в БД
-                        try:
-                            await db.save_chat(chat_data)
-                        except Exception as e:
-                            logger.error(f"Возникла ошибка при сохранении чата для комментариев {chat_info['chat_title']}: {e}")
-
-                    except UserAlreadyParticipantError:
-                        # Это нормальная ситуация — мы уже внутри
-                        logger.debug(f"ℹ️ Юзербот уже состоит в группе обсуждений {linked_chat_id} канала '{chanel.title}'")
-
-                    except InviteRequestSentError:
-                        logger.warning(
-                            f"⏳ Запрос на вступление в группу обсуждений {linked_chat_id} канала '{chanel.title}' отправлен. "
-                            f"Ждем одобрения админа."
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"⚠️ Не удалось вступить автоматически. Зайдите в группу вручную через кнопку 'Прокомментировать' в канале: {e}")
-
-                else:
-                    logger.info(f"❌ У этого канала {chanel.title} НЕТ привязанной группы обсуждений (комментарии отключены).")
-
-            except Exception as e:
-                logger.error(f"Ошибка при получении данных о канале для обсуждений {chanel.title}: {e}")
+            # 2. Обработка чата-обсуждения (вынесена в отдельный метод для чистоты)
+            await self._handle_discussion_chat(chanel)
 
         except Exception as e:
-            logger.error(f"Ошибка при попытке подключения к каналу/группе {chat_entity}: {e}")
+            logger.error(f"Критическая ошибка при подключении к {chat_entity}: {e}")
             raise e
+
+    async def _handle_discussion_chat(self, main_channel):
+        """Обрабатывает и логирует вступление в связанный чат-обсуждение"""
+        try:
+            full_channel = await client(GetFullChannelRequest(channel=main_channel))
+            linked_chat_id = full_channel.full_chat.linked_chat_id
+
+            if not linked_chat_id:
+                logger.info(f"ℹ️ У канала '{main_channel.title}' нет привязанной группы обсуждений.")
+                return
+
+            logger.info(f"🔗 Найдена группа обсуждений для '{main_channel.title}'. ID: {linked_chat_id}")
+
+            # Пытаемся вступить
+            try:
+                discussion_updates = await client(JoinChannelRequest(linked_chat_id))
+                comments_chat = discussion_updates.chats[0]
+
+                connecting_name = comments_chat.username or str(comments_chat.id)
+                chat_info = get_chat_info(comments_chat)
+
+                # Сохраняем в таблицу chats
+                await db.save_chat({**chat_info, "connecting_name": connecting_name})
+                # Логируем успешную попытку в chat_join_log
+                await db.log_chat_attempt(
+                    connecting_name,
+                    'success',
+                    f'Авто-вступление как чат-обсуждение для канала {main_channel.title}'
+                )
+                logger.info(f"✅ Успешно вступил и сохранил чат-обсуждение: {comments_chat.title} (@{connecting_name})")
+
+            except UserAlreadyParticipantError:
+                # Мы уже там, но всё равно должны сохранить инфо о чате в БД!
+                comments_chat = await client.get_entity(linked_chat_id)
+                connecting_name = comments_chat.username or str(comments_chat.id)
+                chat_info = get_chat_info(comments_chat)
+
+                await db.save_chat({**chat_info, "connecting_name": connecting_name})
+                await db.log_chat_attempt(
+                    connecting_name,
+                    'success',
+                    f'Уже состоял в чате-обсуждении для {main_channel.title}'
+                )
+                logger.debug(f"ℹ️ Уже состою в группе обсуждений: {comments_chat.title}")
+
+            except InviteRequestSentError:
+                comments_chat = await client.get_entity(linked_chat_id)
+                connecting_name = comments_chat.username or str(comments_chat.id)
+                await db.log_chat_attempt(
+                    connecting_name,
+                    'invite_sent',
+                    f'Запрос отправлен для {main_channel.title}'
+                )
+                logger.warning(f"⏳ Запрос на вступление отправлен админам: {comments_chat.title}")
+
+            except Exception as e:
+                # Пытаемся получить имя чата для логирования, даже если вступление не удалось
+                try:
+                    comments_chat = await client.get_entity(linked_chat_id)
+                    connecting_name = comments_chat.username or str(comments_chat.id)
+                except Exception:
+                    connecting_name = str(linked_chat_id)
+
+                await db.log_chat_attempt(
+                    connecting_name,
+                    'permission_denied',
+                    f'Не удалось вступить в обсуждение {main_channel.title}: {e}'
+                )
+                logger.warning(f"⚠️ Не удалось вступить в обсуждение '{main_channel.title}'. Зайдите вручную: {e}")
+
+        except Exception as e:
+            logger.error(f"Ошибка при получении данных о канале для обсуждений '{main_channel.title}': {e}")
