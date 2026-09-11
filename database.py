@@ -5,11 +5,11 @@ from typing import Optional, List, Dict
 
 from asyncpg import UniqueViolationError
 
-from config import DATABASE_PATH
+from config import settings
 
 
 class MessageDatabase:
-    def __init__(self, db_path: str = DATABASE_PATH):
+    def __init__(self, db_path: str = settings.DATABASE_PATH):
         self.db_path = db_path
         self.pool: asyncpg.Pool | None = None
 

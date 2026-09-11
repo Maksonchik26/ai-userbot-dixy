@@ -9,30 +9,15 @@ from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelReq
 from telethon.tl.types import User, Chat, Channel
 from telethon.errors import FloodWaitError, ChatAdminRequiredError, UserAlreadyParticipantError, InviteRequestSentError
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from config import (
-    API_ID,
-    API_HASH,
-    SESSION_NAME,
-    STRING_SESSION,
-    LOG_LEVEL,
-    LOG_FILE,
-    PROXY_HOST,
-    PROXY_PORT,
-    PROXY_USERNAME,
-    PROXY_PASSWORD,
-    PROXY_SET,
-    PROXY_TYPE,
-    CHAT_ENTITIES,
-    DAYS_BACK,
-)
+from config import settings
 from database import MessageDatabase
 
 # Настройка логирования
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
+    level=getattr(logging, settings.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.FileHandler(settings.LOG_FILE, encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -46,22 +31,24 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # Инициализация клиента Telegram
-session_arg = StringSession(STRING_SESSION) if STRING_SESSION else SESSION_NAME
+session_arg = StringSession(settings.STRING_SESSION)
 
 # Инициализация прокси, если передан в env
 proxy = None
-if PROXY_SET:
+if settings.PROXY_SET:
     proxy = {
-        'proxy_type': PROXY_TYPE,
-        'addr': PROXY_HOST,
-        'port': PROXY_PORT,
-        'username': PROXY_USERNAME,
-        'password': PROXY_PASSWORD,
+        'proxy_type': settings.PROXY_TYPE,
+        'addr': settings.PROXY_HOST,
+        'port': settings.PROXY_PORT,
+        'username': settings.PROXY_USERNAME,
+        'password': settings.PROXY_PASSWORD,
         'rdns': True
     }
 
 # Инициализация клиента
-client = TelegramClient(session_arg, API_ID, API_HASH, proxy=proxy)
+client = TelegramClient(session_arg, settings.API_ID, settings.API_HASH, proxy=proxy)
+
+
 
 # Флаг для отслеживания активного парсинга
 parsing_active = {}
@@ -189,7 +176,7 @@ async def process_message(
         return False
 
 
-CHAT_ENTITIES_LIST = [item.strip() for item in CHAT_ENTITIES.split(",") if item.strip()]
+CHAT_ENTITIES_LIST = [item.strip() for item in settings.CHAT_ENTITIES.split(",") if item.strip()]
 
 
 async def sync_comments_for_recent_posts(chat, chat_id: int, parsed_at: datetime, days_back: int = 1):
@@ -418,7 +405,7 @@ async def parse_chat_history(chat_entity, parsed_at: datetime, limit=None):
             # ФАЗА 2: Мониторинг комментариев к УЖЕ СОХРАНЕННЫМ постам
             # ========================================================
             logger.info(f"Фаза 2: Проверка новых комментариев к недавним постам в {chat_title}...")
-            await sync_comments_for_recent_posts(chat, chat_id, parsed_at, days_back=DAYS_BACK)
+            await sync_comments_for_recent_posts(chat, chat_id, parsed_at, days_back=settings.DAYS_BACK)
 
             logger.info(f"Парсинг завершен: {chat_title}. Обработано новых постов: {total_parsed}")
             return True
