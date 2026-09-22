@@ -649,14 +649,14 @@ class ChatManager:
     async def attempt_chat_join(self, chat_entity):
         try:
             await self.connect_to_chat_or_channel(chat_entity)
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
             await db.log_chat_attempt(chat_entity, 'success')
             return 'success'
 
         except FloodWaitError as e:
-            logger.error(f"FloodWaitError: {chat_entity}, sleep {e.seconds} сек.")
-            await asyncio.sleep(e.seconds)
+            logger.error(f"FloodWaitError: {chat_entity}, sleep {e.seconds + 5} сек.")
+            await asyncio.sleep(e.seconds + 5)
             return 'flood'
 
         except Exception as e:
