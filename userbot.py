@@ -754,10 +754,10 @@ class ChatManager:
             linked_chat_id = full_channel.full_chat.linked_chat_id
 
             if not linked_chat_id:
-                logger.info(f"ℹ️ У канала '{main_channel.title}' нет привязанной группы обсуждений.")
+                logger.info(f"ℹ️ У канала '{main_channel.username}' нет привязанной группы обсуждений.")
                 return
 
-            logger.info(f"🔗 Найдена группа обсуждений для '{main_channel.title}'. ID: {linked_chat_id}")
+            logger.info(f"🔗 Найдена группа обсуждений для '{main_channel.username}'. ID: {linked_chat_id}")
 
             # Пытаемся вступить
             try:
@@ -773,7 +773,7 @@ class ChatManager:
                 await db.log_chat_attempt(
                     connecting_name,
                     'success',
-                    f'Авто-вступление как чат-обсуждение для канала {main_channel.title}'
+                    f'Авто-вступление как чат-обсуждение для канала {main_channel.title} с username: {main_channel.username}'
                 )
                 logger.info(f"✅ Успешно вступил и сохранил чат-обсуждение: {comments_chat.title} (@{connecting_name})")
 
@@ -787,7 +787,7 @@ class ChatManager:
                 await db.log_chat_attempt(
                     connecting_name,
                     'success',
-                    f'Уже состоял в чате-обсуждении для {main_channel.title}'
+                    f'Уже состоял в чате-обсуждении для {main_channel.username}'
                 )
                 logger.debug(f"ℹ️ Уже состою в группе обсуждений: {comments_chat.title}")
 
@@ -797,7 +797,7 @@ class ChatManager:
                 await db.log_chat_attempt(
                     connecting_name,
                     'invite_sent',
-                    f'Запрос отправлен для {main_channel.title}'
+                    f'Запрос отправлен для {main_channel.username}'
                 )
                 logger.warning(f"⏳ Запрос на вступление отправлен админам: {comments_chat.title}")
 
@@ -812,9 +812,9 @@ class ChatManager:
                 await db.log_chat_attempt(
                     connecting_name,
                     'permission_denied',
-                    f'Не удалось вступить в обсуждение {main_channel.title}: {e}'
+                    f'Не удалось вступить в обсуждение {main_channel.username}: {e}'
                 )
-                logger.warning(f"⚠️ Не удалось вступить в обсуждение '{main_channel.title}'. Зайдите вручную: {e}")
+                logger.warning(f"⚠️ Не удалось вступить в обсуждение '{main_channel.username}'. Зайдите вручную: {e}")
 
         except Exception as e:
-            logger.error(f"Ошибка при получении данных о канале для обсуждений '{main_channel.title}': {e}")
+            logger.error(f"Ошибка при получении данных о канале для обсуждений '{main_channel.username}': {e}")
