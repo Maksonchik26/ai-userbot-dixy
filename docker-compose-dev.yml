@@ -4,25 +4,31 @@ services:
   userbot:
     build: .
     container_name: ai-userbot-app-dev
-    restart: unless-stopped
+    restart: on-failure
     command: ["python", "-m", "main"]
     env_file: .env.dev
     depends_on:
       - db  # Ждем запуска БД перед стартом userbot
     ports:
       - "8001:8000"
+    healthcheck:
+      # Используем curl для проверки нашего эндпоинта
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/healthz" ]
+
+      # Интервалы настроены так, чтобы не дергать сервис слишком часто,
+      # но быстро реагировать на зависания
+      interval: 30s       # Проверка каждые 30 секунд
+      timeout: 5s         # Если ответа нет 5 сек — считаем попытку неудачной
+      retries: 3          # 3 неудачи подряд = статус unhealthy -> перезапуск
+      start_period: 60s   # Даем 60 секунд на первый запуск (авторизация, БД)
 
   db:
     image: postgres:16-alpine
     container_name: ai-userbot-db-dev
     restart: unless-stopped
     env_file: .env.dev
-#    environment:
-#      POSTGRES_USER: user
-#      POSTGRES_PASSWORD: dixy12345
-#      POSTGRES_DB: dixy
     ports:
-      - "5433:5432"  # Опционально — только если нужен доступ снаружи
+      - "5433:5432"
     volumes:
       - pgdata-dev:/var/lib/postgresql/data
 

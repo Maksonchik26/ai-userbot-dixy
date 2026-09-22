@@ -1,28 +1,26 @@
-from fastapi import APIRouter, Response, Request, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException
 
-# from userbot import parse_some_chats
+from userbot import client
 
-parsing_router = APIRouter(
+
+healthz_router = APIRouter(
     prefix='',
-    tags=['parsing']
+    tags=['healthz']
 )
 
 
-# @parsing_router.get("/parse_all")
-# async def parse_all_new_messages(background_tasks: BackgroundTasks):
-#     # Запуск фоновой обработки
-#     background_tasks.add_task(parse_some_chats)
-#
-#     return JSONResponse(
-#         {"message": "Parsing in progress"},
-#         status_code=200,
-#     )
+@healthz_router.get("/healtz")
+async def health_check():
+    """
+    Проверяет жизнеспособность всего приложения:
+    1. Жив ли Event Loop (мы ведь смогли выполнить этот код).
+    2. Подключен ли бот к Telegram.
+    """
+    try:
+        if not client.is_connected():
+            raise HTTPException(status_code=503, detail="Telegram client disconnected")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Health check failed: {str(e)}")
 
-# @parsing_router.get("/health")
-# async def healthcheck():
-#     try:
-#         me = await tg_bot.get_me()  # Telegram возвращает данные о боте
-#         return JSONResponse({"status": "ok", "bot": me.username})
-#     except Exception as e:
-#         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
+    return {"status": "ok", "telegram": "connected"}
+
