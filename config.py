@@ -5,7 +5,7 @@ class Settings(BaseSettings):
 # Proxy
     PROXY_SET: int = 0
     PROXY_TYPE: str = "http"
-    PROXY_HOST: str = "147.45.225.110"
+    PROXY_HOST: str = "5.129.236.15"
     PROXY_PORT: str = "3128"
     PROXY_USERNAME: str = "myuser"
     PROXY_PASSWORD: str

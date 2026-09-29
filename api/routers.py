@@ -9,7 +9,7 @@ healthz_router = APIRouter(
 )
 
 
-@healthz_router.get("/healtz")
+@healthz_router.get("/healthz")
 async def health_check():
     """
     Проверяет жизнеспособность всего приложения:
