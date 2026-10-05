@@ -3,7 +3,7 @@ name: dev
 services:
   autoheal:
     image: willfarrell/autoheal:latest
-    container_name: autoheal
+    container_name: autoheal-dev
     restart: always
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
