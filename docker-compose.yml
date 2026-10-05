@@ -1,6 +1,15 @@
 name: prod
 
 services:
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+
   userbot:
     build: .
     container_name: ai-userbot-app
@@ -11,12 +20,15 @@ services:
       - db  # Ждем запуска БД перед стартом userbot
     ports:
       - "8000:8000"
+    labels:
+      - "autoheal=true"
     healthcheck:
       # Используем curl для проверки нашего эндпоинта
       test: [ "CMD", "curl", "-f", "http://localhost:8000/healthz" ]
 
       # Интервалы настроены так, чтобы не дергать сервис слишком часто,
       # но быстро реагировать на зависания
+      start_interval: 30s # Чтобы не спмил на этапе старта /healthz
       interval: 30s       # Проверка каждые 30 секунд
       timeout: 5s         # Если ответа нет 5 сек — считаем попытку неудачной
       retries: 3          # 3 неудачи подряд = статус unhealthy -> перезапуск
