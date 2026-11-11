@@ -126,19 +126,19 @@ if __name__ == '__main__':
         loop.run_until_complete(main())
     except Exception as e:
         logger.error(f"Критическая ошибка на уровне event loop: {e}", exc_info=True)
-    finally:
-        # 4. ФИНАЛЬНАЯ ЗАЧИСТКА всех оставшихся задач перед закрытием loop
-        # Это гарантирует отсутствие предупреждений "Task was destroyed but it is pending!"
-        pending = asyncio.all_tasks(loop)
-        for task in pending:
-            task.cancel()
-
-        if pending:
-            try:
-                # Даем задачам 2 секунды на завершение после cancel
-                loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
-            except Exception:
-                pass
-
-        loop.close()
-        logger.info("Event loop полностью закрыт. Процесс завершен.")
+    # finally:
+    #     # 4. ФИНАЛЬНАЯ ЗАЧИСТКА всех оставшихся задач перед закрытием loop
+    #     # Это гарантирует отсутствие предупреждений "Task was destroyed but it is pending!"
+    #     pending = asyncio.all_tasks(loop)
+    #     for task in pending:
+    #         task.cancel()
+    #
+    #     if pending:
+    #         try:
+    #             # Даем задачам 2 секунды на завершение после cancel
+    #             loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
+    #         except Exception:
+    #             pass
+    #
+    #     loop.close()
+    #     logger.info("Event loop полностью закрыт. Процесс завершен.")
