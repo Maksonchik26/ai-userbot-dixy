@@ -27,67 +27,78 @@ async def simple_scheduler(minutes: int):
 
 
 async def main():
-    """Основная функция запуска userbot"""
-    logger.info("Запуск userbot...")
+    logger.info("🚀 Запуск userbot...")
 
-    # 1. ИНИЦИАЛИЗИРУЕМ ВСЕ ПЕРЕМЕННЫЕ ЗАРАНЕЕ!
-    # Это критически важно, чтобы избежать NameError в блоке finally
+    # 1. Инициализируем переменные
     fastapi_task = None
     join_task = None
     client_started = False
 
     try:
+        # 2. БАЗА И API (Живут всегда, пока контейнер жив)
         await db.connect()
-        logger.info("Подключено к базе данных")
+        logger.info("✅ Подключено к базе данных")
 
-        if settings.STRING_SESSION:
-            logger.info("Используется STRING_SESSION из переменных окружения")
-
-            # Сохраняем задачу в переменную
-            fastapi_task = asyncio.create_task(start_fastapi())
-
-            await client.start()
-            client_started = True  # Помечаем, что клиент успешно запущен
-        else:
+        if not settings.STRING_SESSION:
             raise Exception("STRING_SESSION не найден или не валиден")
 
-        logger.info("Userbot запущен и готов к работе!")
+        # ЗАПУСКАЕМ FASTAPI ПЕРВЫМ! Он будет жить и отвечать на healthcheck,
+        # даже если Telegram будет подключаться 10 минут.
+        fastapi_task = asyncio.create_task(start_fastapi())
+        logger.info("✅ FastAPI запущен и готов отвечать на healthcheck")
 
+        # 3. ИЗОЛИРОВАННЫЙ ЦИКЛ ПОДКЛЮЧЕНИЯ TELEGRAM
+        # Если здесь ошибка, мы НЕ выходим из main() и НЕ вызываем finally.
+        # Мы просто ждем и пробуем снова.
+        while not shutdown_event.is_set():
+            try:
+                await client.start()
+                client_started = True
+                logger.info("✅ Клиент Telegram успешно подключен!")
+                break  # Успех! Выходим из цикла попыток и идем дальше
+            except Exception as e:
+                logger.warning(f"⚠️ Сбой подключения Telegram: {e}. Повтор через 10 сек...")
+                await asyncio.sleep(10)
+
+        # Если во время бесконечных попыток пришел реальный сигнал на выключение
+        if shutdown_event.is_set():
+            logger.info("Запуск прерван сигналом остановки.")
+            return
+
+        # 4. ЗАПУСК ФОНОВЫХ ЗАДАЧ БОТА (только после успешного подключения)
         chat_manager = ChatManager()
         join_task = asyncio.create_task(chat_manager.add_new_chats())
 
-        # Запускаем слушатель Telegram в фоне
+        # Слушатель событий в фоне
         asyncio.create_task(client.run_until_disconnected())
 
-        # Ждем ТОЛЬКО сигнала завершения от ОС
-        shutdown_task = asyncio.create_task(shutdown_event.wait())
-        await shutdown_task
+        logger.info("🎉 Userbot полностью запущен и работает!")
+
+        # 5. ЖДЕМ РЕАЛЬНОГО СИГНАЛА НА ВЫКЛЮЧЕНИЕ (SIGTERM от Docker)
+        # Эта строка будет висеть вечно, пока Docker не скажет "стоп"
+        await shutdown_event.wait()
 
     except asyncio.CancelledError:
         logger.info("Основной процесс был отменен")
-    except Exception as e:
-        logger.error(f"Ошибка во время выполнения main: {e}", exc_info=True)
-        raise  # Пробрасываем ошибку дальше
-    finally:
-        logger.info("Начало корректного завершения работы...")
 
-        # 2. ШТАТНАЯ остановка FastAPI
+    # МЫ УБРАЛИ except Exception: raise!
+    # Теперь ошибки подключения Telegram не убивают весь процесс.
+
+    finally:
+        # 6. ГРЕЙСФУЛ ШАТДАУН
+        # Сработает ТОЛЬКО когда сработает shutdown_event.wait() выше
+        logger.info("🧹 Начало корректного завершения работы...")
+
+        # А. Останавливаем FastAPI
         if fastapi_task is not None and not fastapi_task.done():
             await stop_fastapi()
             try:
                 await asyncio.wait_for(fastapi_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning("FastAPI не завершилась за 5 сек, применяем принудительную отмену")
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 fastapi_task.cancel()
-                try:
-                    await fastapi_task
-                except asyncio.CancelledError:
-                    pass
-            except asyncio.CancelledError:
-                pass
             logger.info("FastAPI сервер остановлен")
 
-        # 3. Останавливаем фоновую задачу добавления чатов
+        # Б. Останавливаем задачи чатов
         if join_task is not None and not join_task.done():
             join_task.cancel()
             try:
@@ -96,49 +107,40 @@ async def main():
                 pass
             logger.info("Фоновая задача ChatManager остановлена")
 
-        # 4. ПРАВИЛЬНАЯ остановка Telethon (вызовет disconnect)
-        if client_started:
-            if client.is_connected():
-                await client.disconnect()
-                logger.info("Клиент Telegram корректно отключен")
+        # В. Отключаем Telegram
+        if client_started and client.is_connected():
+            await client.disconnect()
+            logger.info("Клиент Telegram корректно отключен")
 
-        # 5. Закрываем БД
+        # Г. Закрываем БД
         try:
             await db.close()
             logger.info("Соединение с БД закрыто")
         except Exception as e:
             logger.error(f"Ошибка при закрытии БД: {e}")
 
-        logger.info("Userbot успешно и безопасно остановлен")
+        logger.info("✨ Userbot успешно и безопасно остановлен")
 
 
 if __name__ == '__main__':
-    # 1. Создаем цикл событий вручную
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # 2. Регистрируем обработчики сигналов
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, handle_sigterm)
 
     try:
-        # 3. Запускаем главную асинхронную функцию
         loop.run_until_complete(main())
     except Exception as e:
         logger.error(f"Критическая ошибка на уровне event loop: {e}", exc_info=True)
-    # finally:
-    #     # 4. ФИНАЛЬНАЯ ЗАЧИСТКА всех оставшихся задач перед закрытием loop
-    #     # Это гарантирует отсутствие предупреждений "Task was destroyed but it is pending!"
-    #     pending = asyncio.all_tasks(loop)
-    #     for task in pending:
-    #         task.cancel()
-    #
-    #     if pending:
-    #         try:
-    #             # Даем задачам 2 секунды на завершение после cancel
-    #             loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
-    #         except Exception:
-    #             pass
-    #
-    #     loop.close()
-    #     logger.info("Event loop полностью закрыт. Процесс завершен.")
+    finally:
+        # Чистка "призрачных" задач
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            try:
+                loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
+            except Exception:
+                pass
+        loop.close()

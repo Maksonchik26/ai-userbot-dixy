@@ -11,16 +11,12 @@ healthz_router = APIRouter(
 
 @healthz_router.get("/healthz")
 async def health_check():
-    """
-    Проверяет жизнеспособность всего приложения:
-    1. Жив ли Event Loop (мы ведь смогли выполнить этот код).
-    2. Подключен ли бот к Telegram.
-    """
     try:
-        if not client.is_connected():
-            raise HTTPException(status_code=503, detail="Telegram client disconnected")
+        # Пытаемся сделать реальный запрос.
+        # Если сокет "зомби" или event loop завис, эта строка упадет с ошибкой или таймаутом.
+        await client.get_me()
+        return {"status": "ok", "telegram": "connected"}
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Health check failed: {str(e)}")
-
-    return {"status": "ok", "telegram": "connected"}
+        # Любая ошибка здесь означает, что бот НЕ может работать
+        raise HTTPException(status_code=503, detail=f"Telegram client unresponsive: {str(e)}")
 
